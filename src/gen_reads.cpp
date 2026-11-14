@@ -60,6 +60,8 @@ inline Dataset make_dataset(const std::string& ref, int L, double coverage,
     require_acgt(ref);
     if (L <= 0 || static_cast<size_t>(L) > ref.size())
         throw std::invalid_argument("read length must be in [1, N]");
+    if (snp_count < 0 || static_cast<size_t>(snp_count) > ref.size())
+        throw std::invalid_argument("snp count must be in [0, N]");
 
     auto rng = make_rng(seed);
     Dataset d;

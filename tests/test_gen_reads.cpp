@@ -46,5 +46,16 @@ int main() {
     assert(a.reads == b.reads);
     assert(a.reads.size() == 3333);
     for (const std::string& r : a.reads) assert(r.size() == 30);
+    // F3: SNP count must fit in the reference (and be non-negative).
+    {
+        std::string tiny(14, 'A');
+        bool thr = false;
+        try { make_dataset(tiny, 14, 1, 15, 1); } catch (const std::invalid_argument&) { thr = true; }
+        assert(thr);
+        thr = false;
+        try { make_dataset(tiny, 14, 1, -1, 1); } catch (const std::invalid_argument&) { thr = true; }
+        assert(thr);
+        make_dataset(tiny, 14, 1, 5, 1);
+    }
     return 0;
 }
