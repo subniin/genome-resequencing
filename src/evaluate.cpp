@@ -106,8 +106,8 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
             if (a < anchors.size()) m.misassemblies++;
 
             int d = anchors[start].rpos - anchors[start].cpos;
-            int cFrom = std::max(anchors[start].cpos, prevEnd);
-            int cTo = anchors[a - 1].cpos + k; // exclusive
+            int cFrom = std::max(start == 0 ? 0 : anchors[start].cpos, prevEnd); // first segment extends to contig start
+            int cTo = a == anchors.size() ? (int)c.size() : anchors[a - 1].cpos + k; // exclusive; last segment extends to contig end
             prevEnd = cTo;
             for (int i = cFrom; i < cTo; ++i) {
                 int q = i + d;

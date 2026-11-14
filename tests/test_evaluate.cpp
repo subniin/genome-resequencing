@@ -72,6 +72,23 @@ int main() {
         assert(std::fabs(f1.snp_recall - 1.0) < 1e-9);
     }
 
+    // F2: SNPs inside the first and last k bases must still be scored (tail bases).
+    {
+        auto r4 = make_rng(3);
+        std::string ref4;
+        for (int i = 0; i < 10000; ++i) ref4.push_back("ACGT"[r4() % 4]);
+        std::string smp4 = ref4;
+        std::vector<TruthSnp> tr4;
+        for (size_t p : {3, 5000, 9996}) {
+            char alt = smp4[p] == 'A' ? 'C' : 'A';
+            smp4[p] = alt;
+            tr4.push_back({p, alt});
+        }
+        Metrics f2 = evaluate_contigs({smp4}, ref4, smp4, tr4, 14);
+        assert(f2.accuracy == 1.0);
+        assert(std::fabs(f2.snp_recall - 1.0) < 1e-9);
+    }
+
     // Unrelated contig: unaligned, no crash.
     std::string junk(200, 'A');
     Metrics u = evaluate_contigs({junk}, ref, sample, truth, 14);
