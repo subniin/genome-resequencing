@@ -113,7 +113,23 @@ contig→reference 정렬은 reference에서 고유한 짧은 k-mer(12~20)를 an
 
 N=1M 이상에서는 E. coli에 repeat(rRNA operon 등)가 있어 greedy 방식이 그 지점에서 끊길 수 있습니다. 이는 알고리즘의 한계로 보고합니다.
 
-## 7. 구현 계획
+## 7. 개발 환경과 구현 계획
+
+### 환경
+
+| 항목 | 내용 |
+|---|---|
+| 핵심 구현 언어 | C++17 (g++ / MinGW-w64) |
+| 보조 스크립트 | Python 3 (데이터 생성 보조, 결과 그래프는 matplotlib) |
+| 빌드 | `g++ -O2 -std=c++17 -static` (Windows MinGW 실행 파일은 `-static` 필요) |
+| OS | Windows 11 |
+| 실행 PC | 데스크탑, GPU RTX 4060 Ti (GPU는 사용하지 않음, CPU 단일 스레드) |
+| CPU / RAM | 측정 전 기록 예정 |
+| 난수 | `mt19937_64`, 고정 seed (재현성). Windows `rand()`는 주기가 짧아 반복이 생기므로 쓰지 않는다 |
+
+시간과 메모리는 같은 PC에서 측정하고, 결과를 적을 때 CPU/RAM 사양을 함께 기록합니다. 언어와 빌드 옵션은 구현을 시작하면서 바뀔 수 있습니다.
+
+### 구현 계획
 
 1. read 생성기: reference 구간 추출 → SNP 삽입 → read 샘플링, 정답 SNP 목록 저장.
 2. 벤치마크: 순진한 all-pairs Greedy Overlap.
