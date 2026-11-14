@@ -47,6 +47,14 @@ ACGT 랜덤 시퀀스를 reference로 생성합니다. reference에 SNP를 넣�
 
 반복을 줄이는 방법: 시퀀스를 한 염기씩 늘리면서, 새로 생기는 길이 14짜리 부분 문자열(14-mer)이 이미 나온 적 있으면 그 염기를 다시 뽑는다. 결과적으로 시퀀스 안의 모든 14-mer가 서로 다르다. 4^14 ≈ 2.7억이라 N=10,000,000까지 가능하다. 일반 난수만 쓴 시퀀스와 반복 14-mer 수를 비교해 보고서에 적는다.
 
+| N | 일반 난수(`mt19937_64`) 중복 14-mer 수 | 고유 생성 시퀀스 중복 14-mer 수 |
+|---|---|---|
+| 10,000 | 0 | 0 |
+| 1,000,000 | 1,780 | 0 |
+| 10,000,000 | 184,685 | 0 |
+
+N=10K에서는 일반 난수도 중복이 거의 없어 차이가 보이지 않는다. 기대 충돌 수가 약 N²/(2·4^14)이라 N이 커야 차이가 드러난다.
+
 가정:
 
 1. read는 sample의 정방향에서만, 시작 위치를 균등하게 뽑는다. 역상보 가닥과 paired-end는 쓰지 않는다.
@@ -146,22 +154,82 @@ reference는 14-mer가 모두 고유하도록 만들기 때문에, 길이가 커
 
 - [x] 문제 정의와 데이터 설정
 - [x] 알고리즘 후보 비교와 선택
-- [ ] reference 생성기
-- [ ] read 생성기
-- [ ] 벤치마크(Greedy Overlap)
-- [ ] SSAKE 계열 구현 (단계 0)
-- [ ] 평가 도구
-- [ ] 실험 단계 1~4
-- [ ] 결과 정리
+- [x] reference 생성기
+- [x] read 생성기
+- [x] 벤치마크(Greedy Overlap)
+- [x] SSAKE 계열 구현 (단계 0)
+- [x] 평가 도구
+- [x] 실험 단계 0~4 (단계 5~6 제외)
+- [x] 결과 정리
 
-## 9. 미정 사항
+## 9. 결과
 
-- De novo에서 D의 의미: 현재는 read와 reference의 mismatch 허용치로 보고 겹침 검증에 쓴다.
-- 역상보 가닥을 기본 설정에 넣을지.
-- 입출력 형식: read는 한 줄에 하나, contig는 FASTA, 정답 SNP는 별도 목록.
-- 측정 PC 사양.
+측정 환경: AMD Ryzen 5 7500F, DDR5 16GB, Windows 11, `g++ -O2 -std=c++17 -static`, 단일 스레드. 시간은 wall time, 메모리는 자식 포함 RSS를 20ms 간격으로 샘플링한 최댓값이다. 0.1초보다 짧은 실행은 샘플링이 안 되어 메모리가 0.0으로 찍히며, 이 값은 측정 불가를 뜻한다.
 
-## 10. 참고
+결과 원본: `results/step0.csv` ~ `results/step4.csv`. 그래프: `results/step1_time_memory.png`, `results/step2_contigs_vs_coverage.png`, `results/step3_recall_vs_snp.png`.
+
+평가 수정 이력: 초기 평가 도구는 contig 끝 꼬리와 spurious anchor 때문에 recall과 accuracy를 낮게 찍었다. 수정 후(커밋 25d3ad5 이후) 값만 아래에 적는다.
+
+### 단계 1: N에 따른 시간·메모리 (coverage 10, L 30, SNP 0.5%)
+
+| N | SSAKE 시간(s) | SSAKE 메모리(MB) | Greedy 시간(s) | Greedy 메모리(MB) | contig 수 | misassembly | SNP recall | accuracy |
+|---|---|---|---|---|---|---|---|---|
+| 10K | 0.11 | 측정 불가 | 0.76 | 5.5 | 20 | 0 | 1.000 | 1.000000 |
+| 100K | 0.07 | 16.9 | 59.3 | 12.2 | 215 | 4 | 1.000 | 1.000000 |
+| 1M | 0.76 | 124.3 | - | - | 1920 | 83 | 0.991 | 0.999983 |
+| 10M | 11.08 | 1189.1 | - | - | 19328 | 8757 | 0.905 | 0.999771 |
+
+Greedy는 100K까지만 돌렸다(all-pairs 비용). N이 커지면 SSAKE 시간과 메모리는 거의 선형으로 늘었다. 10M에서 SNP recall이 0.905로 떨어진 원인은 아직 확인하지 않았다. 후보는 contig가 짧아져(N50 836) 정렬 anchor가 줄어드는 것이다. misassembly 8757은 1M 이상에서 늘었으며, 이것도 원인 확인이 필요하다.
+
+### 단계 2: coverage에 따른 contig 수 (N 10K)
+
+| coverage | 예상(LW) | SSAKE contig | Greedy contig | SNP recall (둘 다) |
+|---|---|---|---|---|
+| 5 | 137 | 130 | 130 | 1.000 |
+| 10 | 22 | 20 | 20 | 1.000 |
+| 15 | 3 | 3 | 3 | 1.000 |
+
+contig 수는 LW 예상과 가깝다. 두 조립기 결과가 같다.
+
+### 단계 3: SNP 비율 (N 10K, coverage 10)
+
+| SNP 비율 | SSAKE recall | Greedy recall | misassembly |
+|---|---|---|---|
+| 0.1% | 1.000 | 1.000 | 0 |
+| 0.5% | 1.000 | 1.000 | 0 |
+| 1.0% | 1.000 | 1.000 | 0 |
+
+SNP 비율을 1%까지 올려도 recall이 변하지 않았다. 예전 0.98~0.99 값은 평가 버그 때문이었다. 이 결과는 de novo 조립이 SNP에 영향을 받지 않는다는 것을 보인다. 단, 이 실험의 read는 sample에서 뽑으므로 SNP가 read에 그대로 들어 있다. 실험은 SNP 수에 따른 평가 결과만 보여준다.
+
+### 단계 4: 파라미터 민감도 (N 10K, coverage 10)
+
+| 변경 | 값 | SSAKE contig | SSAKE misassembly | SSAKE recall | Greedy contig | Greedy misassembly | Greedy recall |
+|---|---|---|---|---|---|---|---|
+| L (o = ⌈L/2⌉) | 15 (o 8) | 100 | 12 | 0.98 | 55 | 210 | 0.52 |
+| L | 30 (o 15) | 20 | 0 | 1.00 | 20 | 0 | 1.00 |
+| L | 45 (o 23) | 15 | 0 | 1.00 | 15 | 0 | 1.00 |
+| o (L 30) | 10 | 4 | 0 | 1.00 | 4 | 0 | 1.00 |
+| o (L 30) | 15 | 20 | 0 | 1.00 | 20 | 0 | 1.00 |
+| o (L 30) | 20 | 101 | 0 | 1.00 | 101 | 0 | 1.00 |
+
+L=15에서 Greedy는 misassembly 210, recall 0.52로 SSAKE(12, 0.98)보다 크게 나빴다. 가설: Greedy는 o 길이 겹침에서도 D=2 mismatch를 허용해서 우연한 겹침을 잘못 잇는다. SSAKE는 o 염기 seed를 정확히 맞춰야 연장한다. 이 가설은 아직 확인하지 않았다.
+
+### 구현에서 정한 것 (원 논문과 다른 점)
+
+- 중복 read는 두 조립기 모두 입력 단계에서 첫 번째 사본만 남긴다. 중복을 남기면 같은 위치 read가 독립 contig를 만들어 N=10K에서 contig 수가 301까지 부풀었다(제거 후 20).
+- SSAKE 연장 후보가 여러 개면 입력 순서상 첫 번째를 쓴다. 다수결은 구현하지 않았다.
+- 평가 accuracy는 contig 전체 염기 대비 sample과 일치하는 염기 비율이다. 정렬되지 않은 contig는 전부 불일치로 센다.
+- 평가는 contig 끝까지 대각선 구간을 확장해 채점한다(꼬리 포함). 대각선 anchor가 하나뿐인 고립 anchor는 spurious로 보고 무시한다. 두 개 이상 연속된 spurious anchor는 아직 걸러내지 못한다.
+
+## 10. 미정 사항 (확정)
+
+
+- D의 의미: read와 reference 사이 mismatch 허용치로 쓴다. 겹침 검증에만 사용.
+- 역상보 가닥: 기본 설정에서 제외. 선택 단계 6에서만 다룬다.
+- 입출력 형식: read는 한 줄에 하나, contig는 FASTA, 정답 SNP는 `pos\tref\talt` TSV(0-based).
+- 측정 PC 사양: 위 결과 섹션의 환경과 같다.
+
+## 11. 참고
 
 - Warren et al., SSAKE, Bioinformatics, 2007 (원문 확인 필요)
 - Lander & Waterman, 1988 (끊김 수 근사)
