@@ -154,20 +154,75 @@ reference는 14-mer가 모두 고유하도록 만들기 때문에, 길이가 커
 
 - [x] 문제 정의와 데이터 설정
 - [x] 알고리즘 후보 비교와 선택
-- [ ] reference 생성기
-- [ ] read 생성기
-- [ ] 벤치마크(Greedy Overlap)
-- [ ] SSAKE 계열 구현 (단계 0)
-- [ ] 평가 도구
-- [ ] 실험 단계 1~4
-- [ ] 결과 정리
+- [x] reference 생성기
+- [x] read 생성기
+- [x] 벤치마크(Greedy Overlap)
+- [x] SSAKE 계열 구현 (단계 0)
+- [x] 평가 도구
+- [x] 실험 단계 0~4 (단계 5~6 제외)
+- [x] 결과 정리
 
-## 9. 미정 사항
+## 9. 결과
 
-- De novo에서 D의 의미: 현재는 read와 reference의 mismatch 허용치로 보고 겹침 검증에 쓴다.
-- 역상보 가닥을 기본 설정에 넣을지.
-- 입출력 형식: read는 한 줄에 하나, contig는 FASTA, 정답 SNP는 별도 목록.
-- 측정 PC 사양.
+측정 환경: AMD Ryzen 5 7500F, DDR5 16GB, Windows 11, `g++ -O2 -std=c++17 -static`, 단일 스레드. 시간은 wall time, 메모리는 자식 포함 RSS를 20ms 간격으로 샘플링한 최댓값이다. 짧은 실행(0.1초 미만)은 샘플링 간격 때문에 메모리가 0 또는 과소로 찍힌다.
+
+결과 원본: `results/step0.csv` ~ `results/step4.csv`, 그래프: `results/step1_time_memory.png`, `results/step2_contigs_vs_coverage.png`, `results/step3_recall_vs_snp.png`.
+
+### 단계 1: N에 따른 시간·메모리 (coverage 10, L 30, SNP 0.5%)
+
+| N | SSAKE 시간(s) | SSAKE 메모리(MB) | Greedy 시간(s) | Greedy 메모리(MB) | contig 수 | SNP recall |
+|---|---|---|---|---|---|---|
+| 10K | 0.03 | 4 | 0.69 | 5.5 | 20 | 0.98 |
+| 100K | 0.06 | 10 | 60.98 | 12.2 | 215 | 0.96 |
+| 1M | 0.72 | 124 | - | - | 1920 | 0.93 |
+| 10M | 10.56 | 1188 | - | - | 19328 | 0.63 |
+
+Greedy는 100K까지만 돌렸다(all-pairs 비용). 10M에서 recall이 떨어지는 이유는 contig가 짧아져 끝부분 SNP가 채점 범위 밖으로 나가기 때문이다. contig 수는 Lander–Waterman 예상(N에 비례)과 같은 크기로 늘었다.
+
+### 단계 2: coverage에 따른 contig 수 (N 10K)
+
+| coverage | 예상(LW) | SSAKE | Greedy | SNP recall |
+|---|---|---|---|---|
+| 5 | 137 | 130 | 130 | 0.70 |
+| 10 | 22 | 20 | 20 | 0.98 |
+| 15 | 3 | 3 | 3 | 0.98 |
+
+### 단계 3: SNP 비율 (N 10K, coverage 10)
+
+| SNP 비율 | SSAKE recall | Greedy recall | 정밀도 |
+|---|---|---|---|
+| 0.1% | 1.00 | 1.00 | 1.00 |
+| 0.5% | 0.98 | 0.98 | 1.00 |
+| 1.0% | 0.99 | 0.99 | 1.00 |
+
+SNP 비율을 올려도 recall이 거의 변하지 않았다. de novo 조립은 mismatch D=2 안에서 SNP를 허용하므로 예상대로 평평하다.
+
+### 단계 4: 파라미터 민감도 (N 10K, coverage 10)
+
+| 변경 | 값 | SSAKE contig 수 | SSAKE recall | Greedy contig 수 | Greedy recall |
+|---|---|---|---|---|---|
+| L (o = ⌈L/2⌉) | 15 (o 8) | 100 | 0.82 | 55 | 0.36 |
+| L | 30 (o 15) | 20 | 0.98 | 20 | 0.98 |
+| L | 45 (o 23) | 15 | 0.98 | 15 | 0.98 |
+| o (L 30) | 10 | 4 | 0.98 | 4 | 0.98 |
+| o (L 30) | 15 | 20 | 0.98 | 20 | 0.98 |
+| o (L 30) | 20 | 101 | 0.88 | 101 | 0.88 |
+
+o가 너무 작으면(10) 우연한 겹침으로 contig가 길게 합쳐지고, 너무 크면(20) 겹침을 못 찾아 끊긴다. L=15에서 Greedy가 SSAKE보다 많이 끊기는 것은 짧은 read에서 중복 read 처리 차이가 커진 결과로 보인다. 원인은 아직 확인하지 않았다.
+
+### 구현에서 정한 것 (원 논문과 다른 점)
+
+- 중복 read는 두 조립기 모두 입력 단계에서 첫 번째 사본만 남긴다. 중복을 남기면 같은 위치 read가 독립 contig를 만들어 N=10K에서 contig 수가 301까지 부풀었다(제거 후 20).
+- SSAKE 연장 후보가 여러 개면 입력 순서상 첫 번째를 쓴다. 다수결은 구현하지 않았다.
+- 평가의 accuracy는 contig 전체 염기 대비 sample과 일치하는 염기 비율이다. 정렬되지 않은 contig는 전부 불일치로 센다.
+- 평가 SNP recall은 정렬된 대각선 구간 안의 염기만 채점한다. 구간 밖 꼬리에 있는 SNP는 놓친 것으로 본다.
+
+## 10. 미정 사항 (확정)
+
+- D의 의미: read와 reference 사이 mismatch 허용치로 쓴다. 겹침 검증에만 사용.
+- 역상보 가닥: 기본 설정에서 제외. 선택 단계 6에서만 다룬다.
+- 입출력 형식: read는 한 줄에 하나, contig는 FASTA, 정답 SNP는 `pos\tref\talt` TSV(0-based).
+- 측정 PC 사양: 위 결과 섹션의 환경과 같다.
 
 ## 10. 참고
 
