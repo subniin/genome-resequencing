@@ -124,7 +124,7 @@ N=1M 이상에서는 E. coli에 repeat(rRNA operon 등)가 있어 greedy 방식�
 | 빌드 | `g++ -O2 -std=c++17 -static` (Windows MinGW 실행 파일은 `-static` 필요) |
 | OS | Windows 11 |
 | 실행 PC | 데스크탑, GPU RTX 4060 Ti (GPU는 사용하지 않음, CPU 단일 스레드) |
-| CPU / RAM | 측정 전 기록 예정 |
+| CPU / RAM | AMD Ryzen 5 7500F (6코어 12스레드, 최대 3.7GHz) / DDR5 16GB (8GB×2, 5200MT/s 동작) |
 | 난수 | `mt19937_64`, 고정 seed (재현성). Windows `rand()`는 주기가 짧아 반복이 생기므로 쓰지 않는다 |
 
 시간과 메모리는 같은 PC에서 측정하고, 결과를 적을 때 CPU/RAM 사양을 함께 기록합니다. 언어와 빌드 옵션은 구현을 시작하면서 바뀔 수 있습니다.
