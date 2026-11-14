@@ -29,9 +29,9 @@ int main() {
     std::vector<std::string> disjoint = {std::string(30, 'A'), std::string(30, 'C')};
     assert(assemble_greedy(disjoint, 15, 2).size() == 2);
 
-    // Identical reads terminate and are not merged into a loop.
+    // Identical reads are collapsed first: terminate, one contig.
     std::vector<std::string> dup = {reads[0], reads[0], reads[0]};
-    assert(assemble_greedy(dup, 15, 2).size() == 3);
+    assert(assemble_greedy(dup, 15, 2).size() == 1);
 
     // o >= L is rejected.
     bool threw = false;

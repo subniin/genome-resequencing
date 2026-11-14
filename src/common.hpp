@@ -4,6 +4,7 @@
 #include <fstream>
 #include <random>
 #include <stdexcept>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -59,4 +60,14 @@ inline int mismatches_bounded(const std::string& a, size_t ai,
 
 inline std::mt19937_64 make_rng(uint64_t seed) {
     return std::mt19937_64(seed);
+}
+
+// Keeps the first copy of each distinct read, in input order.
+inline std::vector<std::string> dedupe_reads(const std::vector<std::string>& reads) {
+    std::unordered_set<std::string> seen;
+    std::vector<std::string> out;
+    for (const std::string& r : reads) {
+        if (seen.insert(r).second) out.push_back(r);
+    }
+    return out;
 }

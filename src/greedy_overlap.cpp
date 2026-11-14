@@ -26,11 +26,12 @@ inline int uf_find(std::vector<int>& p, int x) {
 // Greedy assembly: all pairs are scored once, then links are added from the
 // longest overlap down. A link is kept when both ends are free and it does
 // not close a cycle. Each chain of linked reads is one contig.
-inline std::vector<std::string> assemble_greedy(const std::vector<std::string>& reads, int o, int D) {
+inline std::vector<std::string> assemble_greedy(const std::vector<std::string>& input, int o, int D) {
     if (o < 1) throw std::invalid_argument("min overlap must be >= 1");
-    for (const std::string& r : reads) {
+    for (const std::string& r : input) {
         if (o >= (int)r.size()) throw std::invalid_argument("min overlap must be shorter than the reads");
     }
+    const std::vector<std::string> reads = dedupe_reads(input);
     const int m = (int)reads.size();
 
     // Only pairs with a valid overlap are kept; random data leaves most pairs out.
