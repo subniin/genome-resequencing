@@ -83,8 +83,10 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
             continue;
         }
 
-        // Split anchors into segments of constant diagonal.
+        // Split anchors into segments of constant diagonal. A contig base is scored
+        // once: a segment never starts before the previous segment's end.
         size_t start = 0;
+        int prevEnd = 0;
         for (size_t a = 1; a <= anchors.size(); ++a) {
             bool split = a == anchors.size() ||
                          (anchors[a].rpos - anchors[a].cpos) != (anchors[a - 1].rpos - anchors[a - 1].cpos);
@@ -92,8 +94,9 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
             if (a < anchors.size()) m.misassemblies++;
 
             int d = anchors[start].rpos - anchors[start].cpos;
-            int cFrom = anchors[start].cpos;
+            int cFrom = std::max(anchors[start].cpos, prevEnd);
             int cTo = anchors[a - 1].cpos + k; // exclusive
+            prevEnd = cTo;
             for (int i = cFrom; i < cTo; ++i) {
                 int q = i + d;
                 if (q < 0 || q >= (int)ref.size()) continue;

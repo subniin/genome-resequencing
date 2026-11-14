@@ -31,6 +31,20 @@ int main() {
     assert(w.misassemblies >= 1);
     assert(w.unaligned_contigs == 0);
 
+    // Random chimeras on a large reference: a junction k-mer can match elsewhere,
+    // splitting segments. Each contig base must count once, so accuracy stays <= 1.
+    auto rng2 = make_rng(5);
+    std::string big;
+    for (int i = 0; i < 1000000; ++i) big.push_back("ACGT"[rng2() % 4]);
+    std::vector<std::string> chimeras;
+    for (int t = 0; t < 3000; ++t) {
+        size_t a = rng2() % (big.size() - 300);
+        size_t b = rng2() % (big.size() - 300);
+        chimeras.push_back(big.substr(a, 150) + big.substr(b, 150));
+    }
+    Metrics c = evaluate_contigs(chimeras, big, big, {}, 14);
+    assert(c.accuracy <= 1.0 + 1e-12);
+
     // Unrelated contig: unaligned, no crash.
     std::string junk(200, 'A');
     Metrics u = evaluate_contigs({junk}, ref, sample, truth, 14);
