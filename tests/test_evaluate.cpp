@@ -45,6 +45,33 @@ int main() {
     Metrics c = evaluate_contigs(chimeras, big, big, {}, 14);
     assert(c.accuracy <= 1.0 + 1e-12);
 
+    // F1: a SNP-containing 14-mer that also occurs elsewhere in the reference gives an
+    // isolated spurious anchor; it must not split the contig or move scoring off-diagonal.
+    {
+        auto r3 = make_rng(77);
+        std::string ref3;
+        for (int i = 0; i < 1000000; ++i) ref3.push_back("ACGT"[r3() % 4]);
+        std::string smp3 = ref3;
+        std::vector<TruthSnp> tr3;
+        for (int s = 0; s < 50; ++s) {
+            size_t p = 10000 + 19000 * (size_t)s;
+            char alt = smp3[p] == 'A' ? 'C' : 'A';
+            smp3[p] = alt;
+            tr3.push_back({p, alt});
+        }
+        // Plant the SNP 14-mer of every 5th SNP at a far-away spot (in ref and sample).
+        for (int s = 0; s < 50; s += 5) {
+            size_t p = tr3[s].pos, x = 500000 + 3000 * (size_t)s;
+            for (int j = 0; j < 14; ++j) ref3[x + j] = smp3[x + j] = smp3[p - 6 + j];
+            // Flanks differ from the SNP's flanks so the spurious match is a single k-mer.
+            ref3[x - 1] = smp3[x - 1] = smp3[p - 7] == 'A' ? 'C' : 'A';
+            ref3[x + 14] = smp3[x + 14] = smp3[p + 8] == 'A' ? 'C' : 'A';
+        }
+        Metrics f1 = evaluate_contigs({smp3}, ref3, smp3, tr3, 14);
+        assert(f1.misassemblies == 0);
+        assert(std::fabs(f1.snp_recall - 1.0) < 1e-9);
+    }
+
     // Unrelated contig: unaligned, no crash.
     std::string junk(200, 'A');
     Metrics u = evaluate_contigs({junk}, ref, sample, truth, 14);

@@ -78,6 +78,18 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
             auto it = kmerPos.find(c.substr(i, k));
             if (it != kmerPos.end() && it->second >= 0) anchors.push_back({i, it->second});
         }
+        // Drop isolated spurious anchors: diagonal differs from both neighbours.
+        // Ends are kept only if they agree with their single neighbour.
+        if (anchors.size() > 1) {
+            auto diag = [](const Anchor& x) { return x.rpos - x.cpos; };
+            std::vector<Anchor> kept;
+            for (size_t i = 0; i < anchors.size(); ++i) {
+                bool prevOk = i > 0 && diag(anchors[i]) == diag(anchors[i - 1]);
+                bool nextOk = i + 1 < anchors.size() && diag(anchors[i]) == diag(anchors[i + 1]);
+                if (prevOk || nextOk) kept.push_back(anchors[i]);
+            }
+            anchors.swap(kept);
+        }
         if (anchors.empty()) {
             m.unaligned_contigs++;
             continue;
