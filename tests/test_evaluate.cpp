@@ -94,5 +94,48 @@ int main() {
     Metrics u = evaluate_contigs({junk}, ref, sample, truth, 14);
     assert(u.unaligned_contigs == 1);
     assert(u.snp_recall == 0.0);
+
+    // F1: an unaligned contig must not dilute accuracy; its share is reported separately.
+    {
+        auto rj = make_rng(99);
+        std::string rnd;
+        for (int i = 0; i < 250; ++i) rnd.push_back("ACGT"[rj() % 4]);
+        Metrics mu = evaluate_contigs({sample, rnd}, ref, sample, truth, 14);
+        assert(mu.unaligned_contigs == 1);
+        assert(std::fabs(mu.accuracy - 1.0) < 1e-9);
+        assert(std::fabs(mu.unaligned_bases_frac - 250.0 / (1000 + 250)) < 1e-9);
+        assert(m.unaligned_bases_frac == 0.0);
+    }
+
+    // Contigs shorter than k: no crash, counted as unaligned.
+    {
+        Metrics ms = evaluate_contigs({sample.substr(0, 10), ""}, ref, sample, truth, 14);
+        assert(ms.unaligned_contigs == 2);
+        assert(ms.accuracy == 0.0);
+    }
+
+    // SNP turns "X C G" into "X A G" where "X A G" exists elsewhere in ref (X = 13 bases).
+    // k=14 sees two consecutive spurious anchors; k=24 does not.
+    {
+        auto r = make_rng(31);
+        std::string X, left, mid, right;
+        for (int i = 0; i < 13; ++i) X.push_back("ACGT"[r() % 4]);
+        for (int i = 0; i < 300; ++i) left.push_back("ACGT"[r() % 4]);
+        for (int i = 0; i < 300; ++i) mid.push_back("ACGT"[r() % 4]);
+        for (int i = 0; i < 300; ++i) right.push_back("ACGT"[r() % 4]);
+        std::string ref = left + X + "AG" + mid + X + "CG" + right;
+        size_t p = left.size() + 13 + 2 + mid.size() + 13; // the C
+        std::string sample = ref;
+        sample[p] = 'A';
+        std::vector<TruthSnp> truth = {{p, 'A'}};
+        Metrics m14 = evaluate_contigs({sample}, ref, sample, truth, 14);
+        Metrics m24 = evaluate_contigs({sample}, ref, sample, truth, 24);
+        assert(m14.misassemblies >= 1);
+        assert(m24.misassemblies == 0);
+        assert(std::fabs(m24.snp_recall - 1.0) < 1e-9);
+        bool thr = false;
+        try { evaluate_contigs({sample}, ref, sample, truth, 33); } catch (const std::invalid_argument&) { thr = true; }
+        assert(thr);
+    }
     return 0;
 }

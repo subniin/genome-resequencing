@@ -35,5 +35,80 @@ int main() {
     bool threw = false;
     try { assemble_ssake(reads, 100, 2); } catch (const std::invalid_argument&) { threw = true; }
     assert(threw);
+
+    { PackedReads p; p.push("ACGTACGT"); p.push("CGTACGTT"); KeyIndex ix = build_prefix_index(p, 4); auto rg = ix.range(kmer_code("CGTA", 3, 4)); assert(rg.second - rg.first == 1 && ix.ids[rg.first] == 1); }
+
+    // L=100, o=50 (> 32): key is capped, full overlap still checked.
+    {
+        auto r = make_rng(21);
+        std::string g;
+        for (int i = 0; i < 1000; ++i) g.push_back("ACGT"[r() % 4]);
+        std::vector<std::string> rd;
+        for (int st = 0; st + 100 <= 1000; st += 30) rd.push_back(g.substr(st, 100));
+        rd.push_back(g.substr(900, 100));
+        std::vector<std::string> c = assemble_ssake(rd, 50, 2);
+        assert(c.size() == 1 && c[0] == g);
+    }
+    // Error inside a read's key region: no crash, contigs stay substrings of the genome
+    // except at most D mismatches each.
+    {
+        auto r = make_rng(22);
+        std::string g;
+        for (int i = 0; i < 400; ++i) g.push_back("ACGT"[r() % 4]);
+        std::vector<std::string> rd;
+        for (int st = 0; st + 50 <= 400; st += 10) rd.push_back(g.substr(st, 50));
+        rd[5][3] = rd[5][3] == 'A' ? 'C' : 'A';
+        std::vector<std::string> c = assemble_ssake(rd, 25, 2);
+        assert(!c.empty());
+        for (const std::string& ct : c) {
+            bool ok = false;
+            for (size_t st = 0; st + ct.size() <= g.size() && !ok; ++st) {
+                int mm = 0;
+                for (size_t i = 0; i < ct.size() && mm <= 2; ++i) mm += ct[i] != g[st + i];
+                ok = mm <= 2;
+            }
+            assert(ok);
+        }
+    }
+    // Empty and single-read inputs.
+    assert(assemble_ssake(std::vector<std::string>{}, 15, 2).empty());
+    {
+        std::vector<std::string> one = {std::string(30, 'A')};
+        std::vector<std::string> c = assemble_ssake(one, 15, 2);
+        assert(c.size() == 1 && c[0] == one[0]);
+    }
+
+    // Coverage 6 reads of a 400-base genome; one read carries an error at its 3' end.
+    // vote=true must reproduce the genome exactly.
+    {
+        auto r = make_rng(41);
+        std::string g;
+        for (int i = 0; i < 400; ++i) g.push_back("ACGT"[r() % 4]);
+        PackedReads p;
+        for (int st = 0; st + 50 <= 400; st += 8) {
+            std::string rd = g.substr(st, 50);
+            if (st == 80) rd[49] = rd[49] == 'A' ? 'C' : 'A';
+            p.push(rd);
+        }
+        p.push(g.substr(350, 50));
+        std::vector<std::string> c = assemble_ssake(p, 25, 2, true);
+        assert(c.size() == 1 && c[0] == g);
+    }
+    // 5' vote: the seed is the last read; an upstream read carries an error at base 0 (the
+    // last base reached when extending left). Two reads reaching further left outvote it (2 of 3).
+    {
+        auto r = make_rng(42);
+        std::string g;
+        for (int i = 0; i < 400; ++i) g.push_back("ACGT"[r() % 4]);
+        PackedReads p;
+        p.push(g.substr(350, 50));
+        for (int st = 0; st < 350; st += 8) {
+            std::string rd = g.substr(st, 50);
+            if (st == 176) rd[0] = rd[0] == 'A' ? 'C' : 'A';
+            p.push(rd);
+        }
+        std::vector<std::string> c = assemble_ssake(p, 25, 2, true);
+        assert(c.size() == 1 && c[0] == g);
+    }
     return 0;
 }
