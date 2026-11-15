@@ -7,22 +7,6 @@
 #include <string>
 #include <vector>
 
-inline int base_index(char c) {
-    switch (c) {
-        case 'A': return 0;
-        case 'C': return 1;
-        case 'G': return 2;
-        default:  return 3; // 'T'
-    }
-}
-
-// Code of the k-mer that ends at index `end` (requires end + 1 >= k).
-inline uint64_t kmer_code(const std::string& seq, size_t end, int k) {
-    uint64_t code = 0;
-    for (size_t t = end + 1 - k; t <= end; ++t) code = (code << 2) | base_index(seq[t]);
-    return code;
-}
-
 // Builds a length-N sequence where all k-mers are distinct. Bases are placed
 // one by one in a random order; when no base fits, the previous base is
 // removed (unmarking its k-mer) and tried with its next candidate.
