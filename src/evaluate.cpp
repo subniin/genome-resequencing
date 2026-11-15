@@ -7,7 +7,6 @@
 #include <iostream>
 #include <map>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 struct TruthSnp {
@@ -49,14 +48,26 @@ inline size_t compute_n50(std::vector<size_t> lens) {
 inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
                                 const std::string& ref, const std::string& sample,
                                 const std::vector<TruthSnp>& truth, int k) {
-    // Unique k-mers of the reference -> position; repeated ones are dropped.
-    std::unordered_map<std::string, int> kmerPos;
-    for (int q = 0; q + k <= (int)ref.size(); ++q) {
-        std::string km = ref.substr(q, k);
-        auto it = kmerPos.find(km);
-        if (it == kmerPos.end()) kmerPos.emplace(km, q);
-        else it->second = -1;
+    if (k < 1 || k > 32) throw std::invalid_argument("k must be in [1, 32]");
+    const uint64_t mask = k == 32 ? ~0ULL : ((1ULL << (2 * k)) - 1);
+
+    // Unique reference k-mers as (code, position), sorted by code; repeated codes are dropped.
+    std::vector<std::pair<uint64_t, uint32_t>> refK;
+    if (ref.size() >= (size_t)k) refK.reserve(ref.size() - k + 1);
+    uint64_t code = 0;
+    for (size_t q = 0; q < ref.size(); ++q) {
+        code = ((code << 2) | (uint64_t)base_index(ref[q])) & mask;
+        if (q + 1 >= (size_t)k) refK.push_back({code, (uint32_t)(q + 1 - k)});
     }
+    std::sort(refK.begin(), refK.end());
+    size_t kept = 0;
+    for (size_t i = 0; i < refK.size();) {
+        size_t j = i + 1;
+        while (j < refK.size() && refK[j].first == refK[i].first) ++j;
+        if (j - i == 1) refK[kept++] = refK[i];
+        i = j;
+    }
+    refK.resize(kept);
 
     std::map<size_t, char> truthMap;
     for (const TruthSnp& t : truth) truthMap[t.pos] = t.alt;
@@ -74,9 +85,12 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
         totalBases += c.size();
 
         std::vector<Anchor> anchors;
-        for (int i = 0; i + k <= (int)c.size(); ++i) {
-            auto it = kmerPos.find(c.substr(i, k));
-            if (it != kmerPos.end() && it->second >= 0) anchors.push_back({i, it->second});
+        uint64_t cc = 0;
+        for (int i = 0; i < (int)c.size(); ++i) {
+            cc = ((cc << 2) | (uint64_t)base_index(c[i])) & mask;
+            if (i + 1 < k) continue;
+            auto it = std::lower_bound(refK.begin(), refK.end(), std::make_pair(cc, (uint32_t)0));
+            if (it != refK.end() && it->first == cc) anchors.push_back({i + 1 - k, (int)it->second});
         }
         // Drop isolated spurious anchors: diagonal differs from both neighbours.
         // Ends are kept only if they agree with their single neighbour.
@@ -140,7 +154,7 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
 #ifndef EVALUATE_NO_MAIN
 int main(int argc, char** argv) {
     std::string contigs_path, ref_path, sample_path, truth_path;
-    int k = 14;
+    int k = 24;
     for (int a = 1; a + 1 < argc; a += 2) {
         std::string flag = argv[a];
         std::string val = argv[a + 1];
@@ -152,7 +166,7 @@ int main(int argc, char** argv) {
         else { std::cerr << "unknown flag " << flag << "\n"; return 1; }
     }
     if (contigs_path.empty() || ref_path.empty() || sample_path.empty() || truth_path.empty()) {
-        std::cerr << "usage: evaluate --contigs F --ref F --sample F --truth TSV [--k K]\n";
+        std::cerr << "usage: evaluate --contigs F --ref F --sample F --truth TSV [--k K (default 24)]\n";
         return 1;
     }
     try {
