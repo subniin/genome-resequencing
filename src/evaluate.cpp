@@ -15,7 +15,8 @@ struct TruthSnp {
 };
 
 struct Metrics {
-    double accuracy = 0;
+    double accuracy = 0; // matched / bases of aligned contigs only
+    double unaligned_bases_frac = 0; // bases of unaligned contigs / all contig bases
     double snp_recall = 0;
     double snp_precision = 0;
     int n_contigs = 0;
@@ -28,7 +29,7 @@ struct Metrics {
 // A segment is a run of anchors on one diagonal d = ref_pos - contig_pos.
 struct Anchor {
     int cpos;
-    int rpos;
+    int64_t rpos;
 };
 
 inline size_t compute_n50(std::vector<size_t> lens) {
@@ -52,12 +53,13 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
     const uint64_t mask = k == 32 ? ~0ULL : ((1ULL << (2 * k)) - 1);
 
     // Unique reference k-mers as (code, position), sorted by code; repeated codes are dropped.
-    std::vector<std::pair<uint64_t, uint32_t>> refK;
+    // Memory: 16 B per reference base (pair<uint64,uint64>), so N=1e8 needs ~1.6 GB.
+    std::vector<std::pair<uint64_t, uint64_t>> refK;
     if (ref.size() >= (size_t)k) refK.reserve(ref.size() - k + 1);
     uint64_t code = 0;
     for (size_t q = 0; q < ref.size(); ++q) {
         code = ((code << 2) | (uint64_t)base_index(ref[q])) & mask;
-        if (q + 1 >= (size_t)k) refK.push_back({code, (uint32_t)(q + 1 - k)});
+        if (q + 1 >= (size_t)k) refK.push_back({code, (uint64_t)(q + 1 - k)});
     }
     std::sort(refK.begin(), refK.end());
     size_t kept = 0;
@@ -75,7 +77,7 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
     Metrics m;
     m.n_contigs = (int)contigs.size();
     std::vector<size_t> lens;
-    size_t totalBases = 0, matchedBases = 0;
+    size_t totalBases = 0, alignedBases = 0, unalignedBases = 0, matchedBases = 0;
     std::vector<bool> covered(ref.size(), false);
     size_t called = 0, hits = 0;
     std::map<size_t, bool> calledSeen; // a SNP is counted once even if two segments cover it
@@ -89,8 +91,8 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
         for (int i = 0; i < (int)c.size(); ++i) {
             cc = ((cc << 2) | (uint64_t)base_index(c[i])) & mask;
             if (i + 1 < k) continue;
-            auto it = std::lower_bound(refK.begin(), refK.end(), std::make_pair(cc, (uint32_t)0));
-            if (it != refK.end() && it->first == cc) anchors.push_back({i + 1 - k, (int)it->second});
+            auto it = std::lower_bound(refK.begin(), refK.end(), std::make_pair(cc, (uint64_t)0));
+            if (it != refK.end() && it->first == cc) anchors.push_back({i + 1 - k, (int64_t)it->second});
         }
         // Drop isolated spurious anchors: diagonal differs from both neighbours.
         // Ends are kept only if they agree with their single neighbour.
@@ -106,9 +108,11 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
         }
         if (anchors.empty()) {
             m.unaligned_contigs++;
+            unalignedBases += c.size();
             continue;
         }
 
+        alignedBases += c.size();
         // Split anchors into segments of constant diagonal. A contig base is scored
         // once: a segment never starts before the previous segment's end.
         size_t start = 0;
@@ -119,13 +123,13 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
             if (!split) continue;
             if (a < anchors.size()) m.misassemblies++;
 
-            int d = anchors[start].rpos - anchors[start].cpos;
+            int64_t d = anchors[start].rpos - anchors[start].cpos;
             int cFrom = std::max(start == 0 ? 0 : anchors[start].cpos, prevEnd); // first segment extends to contig start
             int cTo = a == anchors.size() ? (int)c.size() : anchors[a - 1].cpos + k; // exclusive; last segment extends to contig end
             prevEnd = cTo;
             for (int i = cFrom; i < cTo; ++i) {
-                int q = i + d;
-                if (q < 0 || q >= (int)ref.size()) continue;
+                int64_t q = i + d;
+                if (q < 0 || q >= (int64_t)ref.size()) continue;
                 covered[q] = true;
                 if (c[i] == sample[q]) matchedBases++;
                 if (c[i] != ref[q]) {
@@ -142,7 +146,8 @@ inline Metrics evaluate_contigs(const std::vector<std::string>& contigs,
         }
     }
 
-    m.accuracy = totalBases ? (double)matchedBases / totalBases : 0;
+    m.accuracy = alignedBases ? (double)matchedBases / alignedBases : 0;
+    m.unaligned_bases_frac = totalBases ? (double)unalignedBases / totalBases : 0;
     m.snp_recall = truth.empty() ? 0 : (double)hits / truth.size();
     m.snp_precision = called ? (double)hits / called : 0;
     m.n50 = compute_n50(lens);
@@ -201,9 +206,9 @@ int main(int argc, char** argv) {
             }
         }
         Metrics m = evaluate_contigs(contigs, read_fasta_seq(ref_path), read_fasta_seq(sample_path), truth, k);
-        std::printf("accuracy=%.6f\nsnp_recall=%.6f\nsnp_precision=%.6f\nn_contigs=%d\nn50=%zu\ncovered_frac=%.6f\nmisassemblies=%d\nunaligned_contigs=%d\n",
+        std::printf("accuracy=%.6f\nsnp_recall=%.6f\nsnp_precision=%.6f\nn_contigs=%d\nn50=%zu\ncovered_frac=%.6f\nmisassemblies=%d\nunaligned_contigs=%d\nunaligned_bases_frac=%.6f\n",
                     m.accuracy, m.snp_recall, m.snp_precision, m.n_contigs, m.n50,
-                    m.covered_frac, m.misassemblies, m.unaligned_contigs);
+                    m.covered_frac, m.misassemblies, m.unaligned_contigs, m.unaligned_bases_frac);
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;
