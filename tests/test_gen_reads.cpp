@@ -77,6 +77,16 @@ int main() {
         double f = (double)mm / total;
         assert(f > 0.04 && f < 0.06);
     }
+    // The streaming path used by main (make_sample + sample_reads) equals make_dataset.
+    {
+        auto r = make_rng(9);
+        Dataset d = make_sample(ref, 50, 20, r);
+        std::vector<std::string> streamed;
+        sample_reads(d.sample, 50, 10, 0.01, r, [&](size_t, const std::string& rd) { streamed.push_back(rd); });
+        Dataset full = make_dataset(ref, 50, 10, 20, 9, 0.01);
+        assert(d.sample == full.sample);
+        assert(streamed == full.reads);
+    }
     bool thr = false;
     try { make_dataset(ref, 50, 10, 0, 1, 1.5); } catch (const std::invalid_argument&) { thr = true; }
     assert(thr);

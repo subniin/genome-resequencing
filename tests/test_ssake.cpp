@@ -60,6 +60,15 @@ int main() {
         rd[5][3] = rd[5][3] == 'A' ? 'C' : 'A';
         std::vector<std::string> c = assemble_ssake(rd, 25, 2);
         assert(!c.empty());
+        for (const std::string& ct : c) {
+            bool ok = false;
+            for (size_t st = 0; st + ct.size() <= g.size() && !ok; ++st) {
+                int mm = 0;
+                for (size_t i = 0; i < ct.size() && mm <= 2; ++i) mm += ct[i] != g[st + i];
+                ok = mm <= 2;
+            }
+            assert(ok);
+        }
     }
     // Empty and single-read inputs.
     assert(assemble_ssake(std::vector<std::string>{}, 15, 2).empty());
@@ -82,6 +91,22 @@ int main() {
             p.push(rd);
         }
         p.push(g.substr(350, 50));
+        std::vector<std::string> c = assemble_ssake(p, 25, 2, true);
+        assert(c.size() == 1 && c[0] == g);
+    }
+    // 5' vote: the seed is the last read; an upstream read carries an error at base 0 (the
+    // last base reached when extending left). Two reads reaching further left outvote it (2 of 3).
+    {
+        auto r = make_rng(42);
+        std::string g;
+        for (int i = 0; i < 400; ++i) g.push_back("ACGT"[r() % 4]);
+        PackedReads p;
+        p.push(g.substr(350, 50));
+        for (int st = 0; st < 350; st += 8) {
+            std::string rd = g.substr(st, 50);
+            if (st == 176) rd[0] = rd[0] == 'A' ? 'C' : 'A';
+            p.push(rd);
+        }
         std::vector<std::string> c = assemble_ssake(p, 25, 2, true);
         assert(c.size() == 1 && c[0] == g);
     }

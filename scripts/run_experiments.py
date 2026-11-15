@@ -24,7 +24,14 @@ RESULTS = os.path.join(ROOT, "results")
 SEED = 1
 D = 2
 K_GEN = 16    # k-mer length that makes the reference unique
-K_EVAL = 24   # anchor k-mer length in the evaluator
+
+
+def k_eval_for(N):
+    """Evaluator anchor k: 24 up to N=1e7, 28 above. At N=1e8 a k=20..24 anchor can match a
+    random reference k-mer and report a false misassembly (see README 4.3)."""
+    return 24 if N <= 10_000_000 else 28
+
+
 L_DEFAULT = 50
 COV_DEFAULT = 10
 SNP_RATIO = 0.001
@@ -37,6 +44,7 @@ COLUMNS = [
     "repeats", "repeat_len", "M",
     "seconds", "peak_mem_mb", "accuracy", "snp_recall", "snp_precision",
     "n_contigs", "n50", "covered_frac", "misassemblies", "unaligned_contigs",
+    "unaligned_bases_frac", "k_eval",
 ]
 
 
@@ -107,7 +115,7 @@ def run_case(step, variable, value, tool, N, L, coverage, snp_count, o,
     out = subprocess.run(
         [exe("evaluate"), "--contigs", contigs, "--ref", ref,
          "--sample", os.path.join(run_dir, "sample.txt"),
-         "--truth", os.path.join(run_dir, "truth_snps.tsv"), "--k", str(K_EVAL)],
+         "--truth", os.path.join(run_dir, "truth_snps.tsv"), "--k", str(k_eval_for(N))],
         check=True, capture_output=True, text=True).stdout
     metrics = dict(line.split("=", 1) for line in out.strip().splitlines())
 
@@ -116,7 +124,7 @@ def run_case(step, variable, value, tool, N, L, coverage, snp_count, o,
         "step": step, "variable": variable, "value": value, "tool": tool,
         "N": N, "L": L, "coverage": coverage, "snps": snp_count, "o": o, "D": D,
         "err": err, "repeats": repeats, "repeat_len": repeat_len, "M": M,
-        "seconds": round(seconds, 3), "peak_mem_mb": round(peak_mb, 1),
+        "k_eval": k_eval_for(N), "seconds": round(seconds, 3), "peak_mem_mb": round(peak_mb, 1),
     }
     row.update(metrics)
     print(f"[step {step}] {tool} {tag}: {seconds:.2f}s {peak_mb:.0f}MB "
