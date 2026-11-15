@@ -4,7 +4,7 @@
 
 **Goal:** `알고리즘응용_설계.pdf` 설계 프로젝트 조건(N 최대 3×10^9, M 2×10^7~2×10^8, L 32~100, D, repeat)에 맞춰 기존 de novo 조립 실험을 확장한다. M=2×10^7까지 이 PC(16GB)에서 실측하고, read 오류와 repeat 실험을 추가하고, README를 발표 슬라이드 구성(62쪽)으로 다시 쓴다.
 
-**Architecture:** 기존 C++17 CLI 도구(`gen_reference`, `gen_reads`, `ssake`, `greedy_overlap`, `evaluate`)와 Python 실험 스크립트 구조를 유지한다. 메모리 병목인 read 저장과 해시 색인을 "read를 이어 붙인 문자열 하나 + (key, id) 정렬 배열과 이진 탐색"으로 바꾸고, 평가 도구의 문자열 k-mer 맵도 같은 정렬 배열 방식으로 바꾼다. 쓰는 기법은 정렬, 이진 탐색, 해시/4진수 코드까지로 제한한다(학부 알고리즘 수준).
+**Architecture:** 기존 C++17 CLI 도구(`gen_reference`, `gen_reads`, `ssake`, `greedy_overlap`, `evaluate`)와 Python 실험 스크립트 구조를 유지한다. 메모리 병목인 read 저장과 해시 색인을 2-bit 압축 read + 정렬 배열 색인으로 바꾸고, 평가 도구의 문자열 k-mer 맵을 정수 코드 정렬 배열로 바꾼다. SSAKE 알고리즘 자체는 단순화하지 않고 유지한다.
 
 **Tech Stack:** C++17 (g++ MinGW-w64 16.2.0, `-O2 -std=c++17 -static`), Python 3.11 + psutil + matplotlib, `mt19937_64` 고정 seed.
 
@@ -26,7 +26,7 @@
 - 단일 스레드, Ryzen 5 7500F / DDR5 16GB / Windows 11에서 측정
 - 발표 필수 항목(PDF 62쪽): Introduction(문제 정의, 데이터, 입출력), Benchmark, Algorithm, Result(머신 사양, 시간·공간 복잡도 big-O 또는 실측, 벤치마크 비교), Future work(장단점, 개선 방안)
 - 실행은 `main`에서 새 브랜치(worktree)로. 커밋은 task마다
-- 난이도: 학부 알고리즘 수업 범위(정렬, 이진 탐색, 해시, 탐욕). 비트 압축, 다수결 합의, de Bruijn graph, BWT 구현은 하지 않고 future work로만 적는다
+- 알고리즘 난이도는 낮추지 않는다: 2-bit 압축, 정렬 배열 색인, 조건부 다수결 연장(Task 8)을 구현한다. de Bruijn graph와 BWT는 future work
 - de novo 유지: `ssake`, `greedy_overlap`은 reads만 입력. reference는 `evaluate`에서만 읽는다
 
 ## Review Focus
@@ -39,43 +39,46 @@
 
 ---
 
-### Task 1: 고정 길이 read 저장 (`common.hpp`)
+### Task 1: 2-bit 압축 read 저장 (`common.hpp`)
 
 **Files:**
-- Modify: `src/common.hpp` (`base_index`, `kmer_code`를 `src/gen_reference.cpp`에서 옮기고 `ReadSet` 정의)
+- Modify: `src/common.hpp` (`base_index`, `kmer_code`를 `src/gen_reference.cpp`에서 옮기고 추가 구조체 정의)
 - Modify: `src/gen_reference.cpp` (옮긴 두 함수 삭제)
 - Test: `tests/test_common.cpp`
 
 **Interfaces:**
 - Produces:
   - `inline int base_index(char c)` (A0 C1 G2 T3, 기존과 동일)
-  - `inline uint64_t kmer_code(const std::string& seq, size_t end, int k)` — `end`에서 끝나는 k-mer를 4진수로 읽은 값, k ∈ [1, 32]
-  - `struct ReadSet { int L = 0; std::string bases; size_t size() const; void push(const std::string& r); std::string get(size_t id) const; char at(size_t id, int i) const; }` — 모든 read를 `bases` 하나에 이어 붙인다(read i = `bases[i*L .. i*L+L)`). std::string 객체 오버헤드가 없어 read당 L바이트. 첫 `push`가 L을 정하고, 다른 길이는 `std::invalid_argument`, ACGT 외 문자는 `std::runtime_error`
-  - `inline ReadSet load_reads(const std::string& path)` — 한 줄씩 읽어 `push`. 빈 줄 무시, 끝 CR 제거, 대문자화. 길이 불일치 시 메시지에 줄 번호 포함
-  - `inline void dedupe(ReadSet& r)` — 첫 사본만 남기고 입력 순서 유지 (`dedupe_reads`와 같은 의미)
+  - `inline uint64_t kmer_code(const std::string& seq, size_t end, int k)` — `end`에서 끝나는 k-mer, k ∈ [1, 32]
+  - `struct PackedReads { int L = 0; std::vector<uint64_t> data; size_t count = 0; size_t size() const; void push(const std::string& r); char base(size_t id, int i) const; uint64_t code(size_t id, int start, int k) const; std::string str(size_t id) const; }` — read 하나에 `ceil(2L/64)`개 word. 첫 `push`가 L을 정하고, 다른 길이는 `std::invalid_argument`, ACGT 외 문자는 `std::runtime_error`
+  - `inline PackedReads load_reads_packed(const std::string& path)` — 한 줄씩 스트리밍. 빈 줄 무시, 끝 CR 제거, 대문자화. 길이 불일치 시 메시지에 줄 번호 포함
+  - `inline void dedupe_packed(PackedReads& r)` — 첫 사본만 남기고 입력 순서 유지 (`dedupe_reads`와 같은 의미)
 
 - [ ] **Step 1: Write the failing test** (`tests/test_common.cpp`에 추가)
 
 ```cpp
-ReadSet p;
-std::string a = "ACGTACGTTTGCAACGTACGTTTGCAAC", b = std::string(28, 'G');
+// PackedReads round trip and k-mer codes match the string versions.
+PackedReads p;
+std::string a = "ACGTACGTTTGCAACGTACGTTTGCAACGTACGTTTGCAACGTACGTTTGCAACGTACGTTTGCAAC"; // 68 bases, crosses a word
+std::string b = std::string(68, 'G');
 p.push(a); p.push(b); p.push(a);
-assert(p.size() == 3 && p.L == 28);
-assert(p.get(0) == a && p.get(1) == b && p.at(0, 27) == a[27]);
-assert(kmer_code(a, 27, 28) == kmer_code(p.get(0), 27, 28));
+assert(p.size() == 3 && p.L == 68);
+assert(p.str(0) == a && p.str(1) == b);
+assert(p.base(0, 67) == a[67]);
+assert(p.code(0, 30, 32) == kmer_code(a, 61, 32));
 bool threw = false;
 try { p.push("ACGT"); } catch (const std::invalid_argument&) { threw = true; }
 assert(threw);
-dedupe(p);
-assert(p.size() == 2 && p.get(0) == a && p.get(1) == b);
+dedupe_packed(p);
+assert(p.size() == 2 && p.str(0) == a && p.str(1) == b);
 
-// load_reads: skips blank lines, strips CR, rejects mixed lengths.
+// load_reads_packed: skips blank lines, strips CR, rejects mixed lengths.
 { std::ofstream f("build/tmp_reads.txt", std::ios::binary); f << "acgt\r\n\r\nTTGG\n"; }
-ReadSet q = load_reads("build/tmp_reads.txt");
-assert(q.size() == 2 && q.get(0) == "ACGT" && q.get(1) == "TTGG");
+PackedReads q = load_reads_packed("build/tmp_reads.txt");
+assert(q.size() == 2 && q.str(0) == "ACGT" && q.str(1) == "TTGG");
 { std::ofstream f("build/tmp_reads.txt", std::ios::binary); f << "ACGT\nACG\n"; }
 threw = false;
-try { load_reads("build/tmp_reads.txt"); } catch (const std::invalid_argument&) { threw = true; }
+try { load_reads_packed("build/tmp_reads.txt"); } catch (const std::invalid_argument&) { threw = true; }
 assert(threw);
 std::remove("build/tmp_reads.txt");
 ```
@@ -83,11 +86,11 @@ std::remove("build/tmp_reads.txt");
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `g++ -O2 -std=c++17 -static tests/test_common.cpp -o build/test_common.exe`
-Expected: 컴파일 오류 `'ReadSet' was not declared`
+Expected: 컴파일 오류 `'PackedReads' was not declared`
 
-- [ ] **Step 3: Implement** `ReadSet`, `load_reads`, `dedupe`, 옮긴 `base_index`/`kmer_code` in `src/common.hpp`
+- [ ] **Step 3: Implement** `PackedReads`, `load_reads_packed`, `dedupe_packed`, 옮긴 `base_index`/`kmer_code` in `src/common.hpp`
 
-`dedupe`: id 배열을 read 문자열 기준으로 정렬(`std::sort`, 같으면 id 작은 순) → 인접 비교로 중복 표시 → 표시 안 된 read만 원래 순서로 새 `bases`에 복사.
+`dedupe_packed`는 id 배열을 (read word 비교) 기준 정렬해 중복을 찾고, 각 그룹의 최소 id만 남긴 뒤 원래 순서로 압축한다. 임시 메모리는 id 배열(4B/read)만 쓴다.
 
 - [ ] **Step 4: Run all tests to verify they pass**
 
@@ -98,7 +101,7 @@ Expected: `FAIL` 출력 없음
 
 ```bash
 git add src/common.hpp src/gen_reference.cpp tests/test_common.cpp
-git commit -m "feat: add fixed-length ReadSet storage"
+git commit -m "feat: add 2-bit packed read storage"
 ```
 
 ---
@@ -221,21 +224,21 @@ git commit -m "feat: stream reads, sparse SNP sampling, read errors"
 
 ---
 
-### Task 4: SSAKE 색인을 정렬 배열 + 이진 탐색으로 교체
+### Task 4: SSAKE를 압축 read + 정렬 배열 색인으로 교체
 
 **Files:**
 - Modify: `src/ssake.cpp`
 - Test: `tests/test_ssake.cpp`
 
 **Interfaces:**
-- Consumes: Task 1 `ReadSet`, `load_reads`, `dedupe`, `kmer_code`
+- Consumes: Task 1 `PackedReads`, `load_reads_packed`, `dedupe_packed`, `kmer_code`
 - Produces:
-  - `struct KeyIndex { std::vector<std::pair<uint64_t, uint32_t>> entries; std::pair<size_t, size_t> range(uint64_t key) const; }` — (key, read id)를 key 오름차순 정렬. `range`는 `std::equal_range`로 key가 같은 구간 [first, second)
-  - `inline KeyIndex build_prefix_index(const ReadSet& r, int kk)` — key = read 앞 kk염기의 `kmer_code`
-  - `inline KeyIndex build_suffix_index(const ReadSet& r, int kk)` — key = read 뒤 kk염기의 `kmer_code`
-  - `inline std::vector<std::string> assemble_ssake(ReadSet reads, int o, int D)` — 내부에서 `dedupe`. kk = min(o, 32)
-  - `inline std::vector<std::string> assemble_ssake(const std::vector<std::string>& input, int o, int D)` — 기존 시그니처 유지, ReadSet으로 바꿔 위 함수 호출. 빈 입력은 빈 결과
-  - CLI: `load_reads` → `assemble_ssake(std::move(reads), o, D)` → `write_fasta`
+  - `struct KeyIndex { std::vector<uint64_t> keys; std::vector<uint32_t> ids; std::pair<size_t, size_t> range(uint64_t key) const; }` — keys 오름차순, `range`는 `equal_range` 결과 인덱스 구간
+  - `inline KeyIndex build_prefix_index(const PackedReads& r, int kk)` — key = read 앞 kk염기 코드
+  - `inline KeyIndex build_suffix_index(const PackedReads& r, int kk)` — key = read 뒤 kk염기 코드
+  - `inline std::vector<std::string> assemble_ssake(PackedReads reads, int o, int D)` — 내부에서 `dedupe_packed`. kk = min(o, 32)
+  - `inline std::vector<std::string> assemble_ssake(const std::vector<std::string>& input, int o, int D)` — 기존 시그니처 유지, PackedReads로 바꿔 위 함수 호출. 빈 입력은 빈 결과
+  - CLI: `load_reads_packed` → `assemble_ssake(std::move(reads), o, D)` → `write_fasta`
 
 동작은 기존 `assemble_ssake`와 같다: seed는 입력 순서, 3' 연장 후 5' 연장, 겹침 k를 `min(contig 길이, L−1)`부터 o까지 내려가며 key로 후보를 찾고 겹침 전체 mismatch ≤ D인 첫 미사용 read를 붙인다. 3' key는 contig의 마지막 k염기 중 앞 kk염기(`kmer_code(contig, contig.size()-k+kk-1, kk)`), 5' key는 contig 앞 k염기 중 뒤 kk염기(`kmer_code(contig, k-1, kk)`). read 수가 `UINT32_MAX` 이상이면 `std::length_error`.
 
@@ -279,7 +282,7 @@ assert(assemble_ssake(std::vector<std::string>{}, 15, 2).empty());
 Run: `g++ -O2 -std=c++17 -static tests/test_ssake.cpp -o build/test_ssake.exe && ./build/test_ssake.exe`
 Expected: L=100 케이스에서 `std::invalid_argument` 없이 통과할 수도 있으므로, 컴파일 오류(`'build_prefix_index' was not declared`)가 나도록 아래 한 줄도 추가한다:
 ```cpp
-{ ReadSet p; p.push("ACGTACGT"); p.push("CGTACGTT"); KeyIndex ix = build_prefix_index(p, 4); auto rg = ix.range(kmer_code("CGTA", 3, 4)); assert(rg.second - rg.first == 1 && ix.entries[rg.first].second == 1); }
+{ PackedReads p; p.push("ACGTACGT"); p.push("CGTACGTT"); KeyIndex ix = build_prefix_index(p, 4); auto rg = ix.range(kmer_code("CGTA", 3, 4)); assert(rg.second - rg.first == 1 && ix.ids[rg.first] == 1); }
 ```
 
 - [ ] **Step 3: Implement** `KeyIndex`, 두 build 함수, 두 `assemble_ssake` 오버로드, CLI in `src/ssake.cpp`
@@ -300,7 +303,7 @@ Expected: 100 B/read 이하 (이전 구현 357 B/read)
 
 ```bash
 git add src/ssake.cpp tests/test_ssake.cpp
-git commit -m "perf: sorted key index and flat read storage in SSAKE"
+git commit -m "perf: packed reads and sorted key index in SSAKE"
 ```
 
 ---
@@ -433,15 +436,15 @@ Expected: `wrote results/step6.csv`까지 출력. 단계 1 M=2×10^7 행 `peak_m
 장 순서와 각 장에 반드시 들어갈 것:
 1. Introduction — 문제 정의(PDF 60쪽 문장), 조건 표(현재 3.1장 유지), 데이터 생성 방법(고유 16-mer reference, repeat 삽입, SNP, read 오류), 입력·출력 형식
 2. Benchmark — Greedy Overlap 동작과 선택 이유
-3. Algorithm — SSAKE 계열 seed-and-extend(탐욕), read를 이어 붙인 저장, (key, id) 정렬 배열 + 이진 탐색 색인(key 최대 32염기), 양방향 연장. 수업 내용(정렬, 이진 탐색, Greedy)과 연결해 설명
+3. Algorithm — SSAKE 계열 seed-and-extend, 2-bit 압축 read, 정렬 배열 색인(key 최대 32염기), 양방향 연장, (Task 8 실행 시) 다수결 연장
 4. Result — 머신 사양, 복잡도 표(아래), 단계 0~6 표와 그래프, 벤치마크 비교, M=2×10^8 메모리 외삽(실측 B/read × 2×10^8), 평가 수정 이력(Task 5 Step 5 결과)
-5. Future work — 장단점, 개선 방안(paired-end, 역상보, read 오류용 다수결 연장, 2-bit 압축, de Bruijn graph, 디스크 기반 색인)
+5. Future work — 장단점, 개선 방안(paired-end, 역상보, de Bruijn graph 비교, 디스크 기반 색인)
 
 복잡도 표 (M = read 수, L = read 길이, o = 최소 겹침):
 
 | 도구 | 시간 | 공간 |
 |---|---|---|
-| SSAKE (이 구현) | O(M log M + M·(L−o)·(log M + L)) | O(M·L + 32M) bytes |
+| SSAKE (이 구현) | O(M log M + M·(L−o)·(log M + L)) | O(M·L/4 + 24M) bytes |
 | Greedy Overlap | O(M²·L²) | O(M²) (후보 쌍) |
 
 결과 해석은 CSV 수치만 근거로 쓰고, 확인하지 않은 원인은 "가설"로 표시한다.
@@ -454,3 +457,57 @@ git add -f results/
 git commit -m "docs: rewrite README for design-project presentation; add results"
 ```
 
+
+---
+
+### Task 8 (조건부): 다수결 연장
+
+**실행 조건:** Task 7 단계 5에서 err 0.01, D 2의 SSAKE `accuracy` < 0.999 또는 `snp_precision` < 0.9. 조건을 만족하지 않으면 건너뛰고 README future work에 "필요 없었음"과 수치를 적는다.
+
+**Files:**
+- Modify: `src/ssake.cpp`
+- Test: `tests/test_ssake.cpp`
+
+**Interfaces:**
+- Produces: `assemble_ssake(PackedReads reads, int o, int D, bool vote)` — `vote=false`는 Task 4 동작. `vote=true`면 3' 연장 한 번에 겹침 ≥ o, mismatch ≤ D인 미사용 후보를 모두 모으고, 겹침 바로 다음 염기의 다수결(후보 ≥ 2, 최다 염기 비율 ≥ 2/3)로 한 염기씩 늘린다. 후보가 그 위치를 지나면 사용 처리. 조건을 못 채우면 연장 중단. 5'도 대칭. CLI `--vote 0|1`
+
+- [ ] **Step 1: Write the failing test**
+
+```cpp
+// Coverage 6 reads of a 400-base genome; one read carries an error at its 3' end.
+// vote=true must reproduce the genome exactly.
+{
+    auto r = make_rng(41);
+    std::string g;
+    for (int i = 0; i < 400; ++i) g.push_back("ACGT"[r() % 4]);
+    PackedReads p;
+    for (int st = 0; st + 50 <= 400; st += 8) {
+        std::string rd = g.substr(st, 50);
+        if (st == 80) rd[49] = rd[49] == 'A' ? 'C' : 'A';
+        p.push(rd);
+    }
+    p.push(g.substr(350, 50));
+    std::vector<std::string> c = assemble_ssake(p, 25, 2, true);
+    assert(c.size() == 1 && c[0] == g);
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `g++ -O2 -std=c++17 -static tests/test_ssake.cpp -o build/test_ssake.exe`
+Expected: 컴파일 오류 (4인자 오버로드 없음)
+
+- [ ] **Step 3: Implement** 다수결 연장 in `src/ssake.cpp`, `run_experiments.py` 단계 5에 `vote=1` 행 추가
+
+- [ ] **Step 4: Run all tests and step 5**
+
+Run: Task 1 Step 4 명령 후 `python -u scripts/run_experiments.py --steps 5 && python scripts/plot.py`
+Expected: `FAIL` 없음. step5.csv에 vote 행 추가
+
+- [ ] **Step 5: README 단계 5 표 갱신 후 Commit**
+
+```bash
+git add src/ssake.cpp tests/test_ssake.cpp scripts/run_experiments.py README.md
+git add -f results/step5.csv results/step5_*.png
+git commit -m "feat: majority-vote extension for reads with errors"
+```
