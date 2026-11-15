@@ -57,5 +57,28 @@ int main() {
         assert(thr);
         make_dataset(tiny, 14, 1, 5, 1);
     }
+
+    // err_rate 0: every read equals the sample at its start.
+    {
+        auto r = make_rng(4);
+        std::string sample = ref; // 10000 bases from the existing test
+        size_t n = 0;
+        sample_reads(sample, 50, 10, 0.0, r, [&](size_t st, const std::string& rd) {
+            assert(rd == sample.substr(st, 50)); ++n; });
+        assert(n == 2000);
+    }
+    // err_rate 0.05: mismatch fraction within [0.04, 0.06].
+    {
+        auto r = make_rng(4);
+        size_t mm = 0, total = 0;
+        sample_reads(ref, 50, 10, 0.05, r, [&](size_t st, const std::string& rd) {
+            for (int i = 0; i < 50; ++i) mm += rd[i] != ref[st + i];
+            total += 50; });
+        double f = (double)mm / total;
+        assert(f > 0.04 && f < 0.06);
+    }
+    bool thr = false;
+    try { make_dataset(ref, 50, 10, 0, 1, 1.5); } catch (const std::invalid_argument&) { thr = true; }
+    assert(thr);
     return 0;
 }

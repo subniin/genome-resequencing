@@ -28,20 +28,18 @@ inline void require_acgt(const std::string& seq) {
     }
 }
 
-// Replaces `count` distinct positions of seq with a different base.
-// Positions are drawn without replacement, so they never collide.
+// Replaces `count` distinct positions of seq with a different base. Positions
+// are drawn by rejection, so the sparse case needs no N-sized array.
 inline std::vector<Snp> insert_snps(std::string& seq, int count, std::mt19937_64& rng) {
     const size_t n = seq.size();
-    std::vector<size_t> pos(n);
-    for (size_t i = 0; i < n; ++i) pos[i] = i;
     static const char kBase[4] = {'A', 'C', 'G', 'T'};
 
+    std::unordered_set<size_t> chosen;
     std::vector<Snp> snps;
     snps.reserve(count);
-    for (int i = 0; i < count; ++i) {
-        size_t j = i + rng() % (n - i);
-        std::swap(pos[i], pos[j]);
-        size_t p = pos[i];
+    while ((int)snps.size() < count) {
+        size_t p = rng() % n;
+        if (!chosen.insert(p).second) continue;
         char ref = seq[p];
         char alt;
         do {
@@ -53,28 +51,56 @@ inline std::vector<Snp> insert_snps(std::string& seq, int count, std::mt19937_64
     return snps;
 }
 
-// Builds the sample genome from ref, then samples M = round(N * coverage / L)
-// reads of length L at uniform start positions in [0, N - L].
-inline Dataset make_dataset(const std::string& ref, int L, double coverage,
-                            int snp_count, uint64_t seed) {
+// Copies ref into a sample genome and places snp_count SNPs in it.
+inline Dataset make_sample(const std::string& ref, int L, int snp_count, std::mt19937_64& rng) {
     require_acgt(ref);
     if (L <= 0 || static_cast<size_t>(L) > ref.size())
         throw std::invalid_argument("read length must be in [1, N]");
     if (snp_count < 0 || static_cast<size_t>(snp_count) > ref.size())
         throw std::invalid_argument("snp count must be in [0, N]");
-
-    auto rng = make_rng(seed);
     Dataset d;
     d.sample = ref;
     d.snps = insert_snps(d.sample, snp_count, rng);
+    return d;
+}
 
-    const size_t n = d.sample.size();
+// Samples M = round(N * coverage / L) reads of length L at uniform start positions
+// in [0, N - L]. Each base is replaced by a different base with probability err_rate.
+// Calls emit(start, read) per read so callers need not hold all reads in memory.
+template <class Emit>
+void sample_reads(const std::string& sample, int L, double coverage, double err_rate,
+                  std::mt19937_64& rng, Emit emit) {
+    if (!(err_rate >= 0 && err_rate < 1)) throw std::invalid_argument("err rate must be in [0, 1)");
+    if (L <= 0 || static_cast<size_t>(L) > sample.size())
+        throw std::invalid_argument("read length must be in [1, N]");
+    static const char kBase[4] = {'A', 'C', 'G', 'T'};
+    const size_t n = sample.size();
     const size_t m = static_cast<size_t>(std::llround(n * coverage / L));
     std::uniform_int_distribution<size_t> start_dist(0, n - L);
-    d.reads.reserve(m);
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    std::string read;
     for (size_t i = 0; i < m; ++i) {
-        d.reads.push_back(d.sample.substr(start_dist(rng), L));
+        size_t st = start_dist(rng);
+        read = sample.substr(st, L);
+        if (err_rate > 0) {
+            for (char& c : read) {
+                if (unit(rng) >= err_rate) continue;
+                int b = 0;
+                while (kBase[b] != c) ++b;
+                c = kBase[(b + 1 + rng() % 3) % 4];
+            }
+        }
+        emit(st, read);
     }
+}
+
+// Builds the sample genome and keeps all M reads in memory (tests and small runs).
+inline Dataset make_dataset(const std::string& ref, int L, double coverage,
+                            int snp_count, uint64_t seed, double err_rate = 0.0) {
+    auto rng = make_rng(seed);
+    Dataset d = make_sample(ref, L, snp_count, rng);
+    sample_reads(d.sample, L, coverage, err_rate, rng,
+                 [&](size_t, const std::string& r) { d.reads.push_back(r); });
     return d;
 }
 
@@ -82,7 +108,7 @@ inline Dataset make_dataset(const std::string& ref, int L, double coverage,
 int main(int argc, char** argv) {
     std::string ref_path, out_dir;
     int L = 30, snps = 50;
-    double coverage = 10;
+    double coverage = 10, err = 0;
     uint64_t seed = 1;
     for (int a = 1; a + 1 < argc; a += 2) {
         std::string flag = argv[a];
@@ -91,16 +117,18 @@ int main(int argc, char** argv) {
         else if (flag == "--L") L = std::stoi(val);
         else if (flag == "--coverage") coverage = std::stod(val);
         else if (flag == "--snps") snps = std::stoi(val);
+        else if (flag == "--err") err = std::stod(val);
         else if (flag == "--seed") seed = std::stoull(val);
         else if (flag == "--out") out_dir = val;
         else { std::cerr << "unknown flag " << flag << "\n"; return 1; }
     }
     if (ref_path.empty() || out_dir.empty()) {
-        std::cerr << "usage: gen_reads --ref FILE --L L --coverage C --snps K --seed S --out DIR\n";
+        std::cerr << "usage: gen_reads --ref FILE --L L --coverage C --snps K --err P --seed S --out DIR\n";
         return 1;
     }
     try {
-        Dataset d = make_dataset(read_fasta_seq(ref_path), L, coverage, snps, seed);
+        auto rng = make_rng(seed);
+        Dataset d = make_sample(read_fasta_seq(ref_path), L, snps, rng);
         std::filesystem::create_directories(out_dir);
 
         std::ofstream(out_dir + "/sample.txt") << d.sample << "\n";
@@ -109,7 +137,8 @@ int main(int argc, char** argv) {
         for (const Snp& s : d.snps) truth << s.pos << '\t' << s.ref << '\t' << s.alt << '\n';
 
         std::ofstream reads(out_dir + "/reads.txt");
-        for (const std::string& r : d.reads) reads << r << '\n';
+        sample_reads(d.sample, L, coverage, err, rng,
+                     [&](size_t, const std::string& r) { reads << r << '\n'; });
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;
