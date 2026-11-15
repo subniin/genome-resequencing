@@ -98,8 +98,11 @@ def run_case(step, variable, value, tool, N, L, coverage, snp_count, o,
                     "--out", run_dir], check=True)
     reads = os.path.join(run_dir, "reads.txt")
     contigs = os.path.join(run_dir, f"contigs_{tool}.fa")
+    # "ssake_vote" is the same binary with the majority-vote extension switched on.
+    binary = "ssake" if tool.startswith("ssake") else tool
+    vote_args = ["--vote", "1"] if tool == "ssake_vote" else []
     seconds, peak_mb, _ = run_measured(
-        [exe(tool), "--reads", reads, "--o", str(o), "--D", str(D), "--out", contigs])
+        [exe(binary), "--reads", reads, "--o", str(o), "--D", str(D), *vote_args, "--out", contigs])
 
     out = subprocess.run(
         [exe("evaluate"), "--contigs", contigs, "--ref", ref,
@@ -197,6 +200,9 @@ def step5():
         for t in TOOLS:
             rows.append(run_case(5, "D", d, t, N_BASE, L_DEFAULT, COV_DEFAULT,
                                  snps_for(N_BASE), default_o(L_DEFAULT), D=d, err=0.01))
+    for err in [0, 0.005, 0.01, 0.02]:
+        rows.append(run_case(5, "err", err, "ssake_vote", N_BASE, L_DEFAULT, COV_DEFAULT,
+                             snps_for(N_BASE), default_o(L_DEFAULT), err=err))
     return rows
 
 

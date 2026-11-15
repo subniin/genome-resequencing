@@ -53,7 +53,11 @@ inline bool overlap_ok(const PackedReads& r, size_t id, int rs, const std::strin
 // Assembles reads with seed-and-extend. Seeds are taken in input order; each
 // seed is extended at its 3' end, then at its 5' end, using only unused reads.
 // The index key is capped at 32 bases; the whole overlap is checked for mismatches.
-inline std::vector<std::string> assemble_ssake(PackedReads reads, int o, int D) {
+// vote=false: the first valid read at the largest overlap extends the contig in one step.
+// vote=true: every valid unused read (any overlap >= o) votes on the next base, each
+// read at its own offset. A base is added with at least 2 voters and a top share of
+// at least 2/3, or when a single voter is left (no conflict to resolve).
+inline std::vector<std::string> assemble_ssake(PackedReads reads, int o, int D, bool vote) {
     if (o < 1) throw std::invalid_argument("min overlap must be >= 1");
     if (reads.size() == 0) return {};
     if (o >= reads.L) throw std::invalid_argument("min overlap must be shorter than the reads");
@@ -74,43 +78,121 @@ inline std::vector<std::string> assemble_ssake(PackedReads reads, int o, int D) 
         used[s] = true;
         std::string contig = reads.str(s);
 
-        // 3' extension: a read whose prefix overlaps the contig's end.
+        // Caps contig growth so a repeat-driven vote cannot loop forever.
+        const size_t cap = m * (size_t)L;
+
+        // 3' extension: reads whose prefix overlaps the contig's end.
         for (bool extended = true; extended;) {
             extended = false;
-            int kmax = std::min((int)contig.size(), L - 1);
-            for (int k = kmax; k >= o && !extended; --k) {
+            const int kmax = std::min((int)contig.size(), L - 1);
+            std::vector<size_t> cand; // read ids
+            std::vector<int> ov;      // overlap length of each candidate with the contig end
+            for (int k = kmax; k >= o && (vote || cand.empty()); --k) {
                 uint64_t key = kmer_code(contig, contig.size() - k + kk - 1, kk);
                 auto [lo, hi] = prefixIdx.range(key);
-                for (size_t x = lo; x < hi && !extended; ++x) {
+                for (size_t x = lo; x < hi && (vote || cand.empty()); ++x) {
                     size_t id = prefixIdx.ids[x];
-                    if (used[id]) continue;
+                    if (used[id] || std::find(cand.begin(), cand.end(), id) != cand.end()) continue;
                     if (overlap_ok(reads, id, 0, contig, contig.size() - k, k, D)) {
-                        for (int i = k; i < L; ++i) contig.push_back(reads.base(id, i));
-                        used[id] = true;
-                        extended = true;
+                        cand.push_back(id);
+                        ov.push_back(k);
                     }
                 }
             }
-        }
+            if (cand.empty()) break;
 
-        // 5' extension: a read whose suffix overlaps the contig's start.
-        for (bool extended = true; extended;) {
-            extended = false;
-            int kmax = std::min((int)contig.size(), L - 1);
-            for (int k = kmax; k >= o && !extended; --k) {
-                uint64_t key = kmer_code(contig, k - 1, kk);
-                auto [lo, hi] = suffixIdx.range(key);
-                for (size_t x = lo; x < hi && !extended; ++x) {
-                    size_t id = suffixIdx.ids[x];
-                    if (used[id]) continue;
-                    if (overlap_ok(reads, id, L - k, contig, 0, k, D)) {
-                        std::string pre;
-                        for (int i = 0; i < L - k; ++i) pre.push_back(reads.base(id, i));
-                        contig = pre + contig;
-                        used[id] = true;
-                        extended = true;
+            if (!vote) {
+                for (int i = ov[0]; i < L; ++i) contig.push_back(reads.base(cand[0], i));
+                used[cand[0]] = true;
+                extended = true;
+                continue;
+            }
+            // Vote one base at a time. Candidate i supplies read base ov[i] + t.
+            std::vector<bool> active(cand.size(), true);
+            int t = 0;
+            while (contig.size() < cap) {
+                int cnt[4] = {0, 0, 0, 0}, total = 0;
+                for (size_t i = 0; i < cand.size(); ++i) {
+                    if (active[i] && ov[i] + t < L) {
+                        cnt[base_index(reads.base(cand[i], ov[i] + t))]++;
+                        total++;
                     }
                 }
+                if (total == 0) break;
+                int best = 0;
+                for (int b = 1; b < 4; ++b) if (cnt[b] > cnt[best]) best = b;
+                if (total > 1 && cnt[best] * 3 < total * 2) break;
+                char bc = "ACGT"[best];
+                contig.push_back(bc);
+                for (size_t i = 0; i < cand.size(); ++i) {
+                    if (active[i] && ov[i] + t < L && reads.base(cand[i], ov[i] + t) != bc) active[i] = false;
+                }
+                ++t;
+            }
+            if (t == 0) break;
+            extended = true;
+            // A candidate is consumed once the vote has passed it: it either finished
+            // (its last base is in the contig) or it disagreed on a base and was dropped.
+            for (size_t i = 0; i < cand.size(); ++i) {
+                if (!active[i] || ov[i] + t >= L) used[cand[i]] = true;
+            }
+        }
+
+        // 5' extension: reads whose suffix overlaps the contig's start.
+        for (bool extended = true; extended;) {
+            extended = false;
+            const int kmax = std::min((int)contig.size(), L - 1);
+            std::vector<size_t> cand;
+            std::vector<int> ov;
+            for (int k = kmax; k >= o && (vote || cand.empty()); --k) {
+                uint64_t key = kmer_code(contig, k - 1, kk);
+                auto [lo, hi] = suffixIdx.range(key);
+                for (size_t x = lo; x < hi && (vote || cand.empty()); ++x) {
+                    size_t id = suffixIdx.ids[x];
+                    if (used[id] || std::find(cand.begin(), cand.end(), id) != cand.end()) continue;
+                    if (overlap_ok(reads, id, L - k, contig, 0, k, D)) {
+                        cand.push_back(id);
+                        ov.push_back(k);
+                    }
+                }
+            }
+            if (cand.empty()) break;
+
+            if (!vote) {
+                std::string pre;
+                for (int i = 0; i < L - ov[0]; ++i) pre.push_back(reads.base(cand[0], i));
+                contig = pre + contig;
+                used[cand[0]] = true;
+                extended = true;
+                continue;
+            }
+            // Vote one base at a time, moving left. Candidate i supplies read base
+            // L - ov[i] - 1 - t.
+            std::vector<bool> active(cand.size(), true);
+            int t = 0;
+            while (contig.size() < cap) {
+                int cnt[4] = {0, 0, 0, 0}, total = 0;
+                for (size_t i = 0; i < cand.size(); ++i) {
+                    if (active[i] && ov[i] + t < L) {
+                        cnt[base_index(reads.base(cand[i], L - ov[i] - 1 - t))]++;
+                        total++;
+                    }
+                }
+                if (total == 0) break;
+                int best = 0;
+                for (int b = 1; b < 4; ++b) if (cnt[b] > cnt[best]) best = b;
+                if (total > 1 && cnt[best] * 3 < total * 2) break;
+                char bc = "ACGT"[best];
+                contig.insert(contig.begin(), bc);
+                for (size_t i = 0; i < cand.size(); ++i) {
+                    if (active[i] && ov[i] + t < L && reads.base(cand[i], L - ov[i] - 1 - t) != bc) active[i] = false;
+                }
+                ++t;
+            }
+            if (t == 0) break;
+            extended = true;
+            for (size_t i = 0; i < cand.size(); ++i) {
+                if (!active[i] || ov[i] + t >= L) used[cand[i]] = true;
             }
         }
         contigs.push_back(std::move(contig));
@@ -118,32 +200,37 @@ inline std::vector<std::string> assemble_ssake(PackedReads reads, int o, int D) 
     return contigs;
 }
 
+inline std::vector<std::string> assemble_ssake(PackedReads reads, int o, int D) {
+    return assemble_ssake(std::move(reads), o, D, false);
+}
+
 // Convenience overload for in-memory reads of one length.
 inline std::vector<std::string> assemble_ssake(const std::vector<std::string>& input, int o, int D) {
     PackedReads p;
     for (const std::string& r : input) p.push(r);
-    return assemble_ssake(std::move(p), o, D);
+    return assemble_ssake(std::move(p), o, D, false);
 }
 
 #ifndef SSAKE_NO_MAIN
 int main(int argc, char** argv) {
     std::string reads_path, out_path;
-    int o = 15, D = 2;
+    int o = 15, D = 2, vote = 0;
     for (int a = 1; a + 1 < argc; a += 2) {
         std::string flag = argv[a];
         std::string val = argv[a + 1];
         if (flag == "--reads") reads_path = val;
         else if (flag == "--o") o = std::stoi(val);
         else if (flag == "--D") D = std::stoi(val);
+        else if (flag == "--vote") vote = std::stoi(val);
         else if (flag == "--out") out_path = val;
         else { std::cerr << "unknown flag " << flag << "\n"; return 1; }
     }
     if (reads_path.empty() || out_path.empty()) {
-        std::cerr << "usage: ssake --reads FILE --o O --D D --out FASTA\n";
+        std::cerr << "usage: ssake --reads FILE --o O --D D [--vote 0|1] --out FASTA\n";
         return 1;
     }
     try {
-        write_fasta(out_path, assemble_ssake(load_reads_packed(reads_path), o, D));
+        write_fasta(out_path, assemble_ssake(load_reads_packed(reads_path), o, D, vote != 0));
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;

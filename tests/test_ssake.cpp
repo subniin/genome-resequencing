@@ -68,5 +68,22 @@ int main() {
         std::vector<std::string> c = assemble_ssake(one, 15, 2);
         assert(c.size() == 1 && c[0] == one[0]);
     }
+
+    // Coverage 6 reads of a 400-base genome; one read carries an error at its 3' end.
+    // vote=true must reproduce the genome exactly.
+    {
+        auto r = make_rng(41);
+        std::string g;
+        for (int i = 0; i < 400; ++i) g.push_back("ACGT"[r() % 4]);
+        PackedReads p;
+        for (int st = 0; st + 50 <= 400; st += 8) {
+            std::string rd = g.substr(st, 50);
+            if (st == 80) rd[49] = rd[49] == 'A' ? 'C' : 'A';
+            p.push(rd);
+        }
+        p.push(g.substr(350, 50));
+        std::vector<std::string> c = assemble_ssake(p, 25, 2, true);
+        assert(c.size() == 1 && c[0] == g);
+    }
     return 0;
 }
