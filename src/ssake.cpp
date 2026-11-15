@@ -61,9 +61,9 @@ inline std::vector<std::string> assemble_ssake(PackedReads reads, int o, int D, 
     if (o < 1) throw std::invalid_argument("min overlap must be >= 1");
     if (reads.size() == 0) return {};
     if (o >= reads.L) throw std::invalid_argument("min overlap must be shorter than the reads");
+    if (reads.size() >= UINT32_MAX) throw std::length_error("too many reads for 32-bit read ids"); // before dedupe's uint32 casts
     dedupe_packed(reads);
     const size_t m = reads.size();
-    if (m >= UINT32_MAX) throw std::length_error("too many reads for 32-bit read ids");
     const int L = reads.L;
     const int kk = std::min(o, 32);
 

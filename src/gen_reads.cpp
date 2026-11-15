@@ -129,6 +129,7 @@ int main(int argc, char** argv) {
     try {
         auto rng = make_rng(seed);
         Dataset d = make_sample(read_fasta_seq(ref_path), L, snps, rng);
+        if (!(err >= 0 && err < 1)) throw std::invalid_argument("err rate must be in [0, 1)"); // before any output
         std::filesystem::create_directories(out_dir);
 
         std::ofstream(out_dir + "/sample.txt") << d.sample << "\n";
