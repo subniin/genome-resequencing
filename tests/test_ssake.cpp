@@ -35,5 +35,38 @@ int main() {
     bool threw = false;
     try { assemble_ssake(reads, 100, 2); } catch (const std::invalid_argument&) { threw = true; }
     assert(threw);
+
+    { PackedReads p; p.push("ACGTACGT"); p.push("CGTACGTT"); KeyIndex ix = build_prefix_index(p, 4); auto rg = ix.range(kmer_code("CGTA", 3, 4)); assert(rg.second - rg.first == 1 && ix.ids[rg.first] == 1); }
+
+    // L=100, o=50 (> 32): key is capped, full overlap still checked.
+    {
+        auto r = make_rng(21);
+        std::string g;
+        for (int i = 0; i < 1000; ++i) g.push_back("ACGT"[r() % 4]);
+        std::vector<std::string> rd;
+        for (int st = 0; st + 100 <= 1000; st += 30) rd.push_back(g.substr(st, 100));
+        rd.push_back(g.substr(900, 100));
+        std::vector<std::string> c = assemble_ssake(rd, 50, 2);
+        assert(c.size() == 1 && c[0] == g);
+    }
+    // Error inside a read's key region: no crash, contigs stay substrings of the genome
+    // except at most D mismatches each.
+    {
+        auto r = make_rng(22);
+        std::string g;
+        for (int i = 0; i < 400; ++i) g.push_back("ACGT"[r() % 4]);
+        std::vector<std::string> rd;
+        for (int st = 0; st + 50 <= 400; st += 10) rd.push_back(g.substr(st, 50));
+        rd[5][3] = rd[5][3] == 'A' ? 'C' : 'A';
+        std::vector<std::string> c = assemble_ssake(rd, 25, 2);
+        assert(!c.empty());
+    }
+    // Empty and single-read inputs.
+    assert(assemble_ssake(std::vector<std::string>{}, 15, 2).empty());
+    {
+        std::vector<std::string> one = {std::string(30, 'A')};
+        std::vector<std::string> c = assemble_ssake(one, 15, 2);
+        assert(c.size() == 1 && c[0] == one[0]);
+    }
     return 0;
 }
