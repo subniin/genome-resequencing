@@ -11,7 +11,7 @@
 // one by one in a random order; when no base fits, the previous base is
 // removed (unmarking its k-mer) and tried with its next candidate.
 inline std::string gen_unique_kmer_seq(size_t N, int k, std::mt19937_64& rng) {
-    if (k < 1 || k > 15) throw std::invalid_argument("k must be in [1, 15]");
+    if (k < 1 || k > 16) throw std::invalid_argument("k must be in [1, 16]");
     const uint64_t space = 1ULL << (2 * k);
     if (N > space) throw std::invalid_argument("N exceeds 4^k; k-mers cannot be unique");
 
@@ -55,11 +55,34 @@ inline std::string gen_unique_kmer_seq(size_t N, int k, std::mt19937_64& rng) {
     return seq;
 }
 
+// Overwrites `count` random copies: a random source segment [s, s+len) is copied
+// to a random target [t, t+len) with |s - t| >= len, so copies never overlap.
+inline void insert_repeats(std::string& seq, int count, int len, std::mt19937_64& rng) {
+    const size_t n = seq.size();
+    if (len < 0 || static_cast<size_t>(len) > n / 2)
+        throw std::invalid_argument("repeat length must be at most N/2");
+    const size_t span = n - len + 1; // valid start positions
+    const size_t L = len;
+    for (int c = 0; c < count; ++c) {
+        // Source s must leave a target: t in [0, s-L] or [s+L, span-1].
+        size_t s, below, above;
+        do {
+            s = rng() % span;
+            below = s >= L ? s - L + 1 : 0;
+            above = s + L <= span - 1 ? span - (s + L) : 0;
+        } while (below + above == 0);
+        size_t r = rng() % (below + above);
+        size_t t = r < below ? r : s + L + (r - below);
+        std::copy(seq.begin() + s, seq.begin() + s + len, seq.begin() + t);
+    }
+}
+
 #ifndef GEN_REFERENCE_NO_MAIN
 int main(int argc, char** argv) {
     size_t N = 10000;
     int k = 14;
     uint64_t seed = 1;
+    int repeats = 0, repeat_len = 0;
     std::string out_path = "data/ref_10000.txt";
     for (int a = 1; a + 1 < argc; a += 2) {
         std::string flag = argv[a];
@@ -67,12 +90,15 @@ int main(int argc, char** argv) {
         if (flag == "--N") N = std::stoull(val);
         else if (flag == "--k") k = std::stoi(val);
         else if (flag == "--seed") seed = std::stoull(val);
+        else if (flag == "--repeats") repeats = std::stoi(val);
+        else if (flag == "--repeat-len") repeat_len = std::stoi(val);
         else if (flag == "--out") out_path = val;
         else { std::cerr << "unknown flag " << flag << "\n"; return 1; }
     }
     try {
         auto rng = make_rng(seed);
         std::string seq = gen_unique_kmer_seq(N, k, rng);
+        insert_repeats(seq, repeats, repeat_len, rng);
         std::ofstream out(out_path);
         if (!out) { std::cerr << "cannot write " << out_path << "\n"; return 1; }
         out << seq << "\n";
